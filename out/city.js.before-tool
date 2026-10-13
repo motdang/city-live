@@ -1,0 +1,967 @@
+/* เมืองตอนนี้ · The City, Live
+   One canvas. A place whose hours we hold is a lamp, lit while it is open this
+   minute in Bangkok; a kind switched on in the chips shows its places, open or not. The ground follows the
+   sun over Chiang Mai, rain falls at the forecast rate for this hour, and the
+   Ping is drawn at the width the Nawarat Bridge gauge reads.
+   Static layers come baked in ./data/; the perishable ones are read from
+   motdang.net/data/*.json, which the walk refreshes. */
+(function () {
+'use strict';
+
+var LIVE = /(^|\.)motdang\.net$/.test(location.hostname) ? '/' : 'https://motdang.net/';
+var REDUCED = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+var DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+var GROUPS = {
+  food:   ['#f6b73c', '#b86e00', 'ร้านอาหาร', 'food'],
+  cafe:   ['#f3e6b3', '#8a6d1f', 'คาเฟ่', 'cafés'],
+  night:  ['#b692ff', '#6b3fd1', 'กลางคืน', 'night'],
+  market: ['#ff6b5e', '#c9302a', 'ตลาด', 'markets'],
+  care:   ['#ff9fc7', '#b8386f', 'นวด ความงาม', 'massage, beauty'],
+  shop:   ['#7fd8a4', '#1f7f47', 'ร้านค้า', 'shops'],
+  wat:    ['#ffd98a', '#9a6a12', 'วัด', 'wats'],
+  stay:   ['#8fc7ff', '#2a6aa8', 'ที่พัก', 'stays'],
+  health: ['#ff9a8a', '#b83a28', 'หมอ ยา', 'health'],
+  other:  ['#c9d4e0', '#5d6b78', 'อื่น ๆ', 'other'],
+  shrine: ['#5fe0d0', '#0f7d72', 'ศาลพระภูมิ ศาลเจ้า', 'spirit houses, shrines'],
+  sights: ['#e3e36a', '#7a7a10', 'ที่เที่ยว พิพิธภัณฑ์', 'sights, museums'],
+  transport: ['#b8c2d4', '#475569', 'รถ ปั๊ม ที่จอด', 'transport, fuel, parking'],
+  repair: ['#e0aa80', '#7a4a24', 'ซ่อม ช่าง', 'repair'],
+  school: ['#8ad8ff', '#1a7a99', 'โรงเรียน', 'schools'],
+  sport: ['#ff8f66', '#b0401a', 'กีฬา ยิม', 'sport, gyms']
+};
+/* the chips, in this order */
+var KIND_ORDER = ['stay', 'food', 'cafe', 'night', 'market', 'wat', 'shrine', 'sights', 'care', 'health', 'shop', 'transport', 'repair', 'school', 'sport', 'other'];
+var VIEWS = {
+  cm:    { lat: 18.7905, lng: 98.9885, span: 0.105 },
+  cr:    { lat: 19.9085, lng: 99.8330, span: 0.075 },
+  north: { lat: 19.25,   lng: 99.10,   span: 2.9 }
+};
+var COS = Math.cos(19 * Math.PI / 180);
+
+/* ------------------------------------------------------------ state */
+var cv = document.getElementById('map'), ctx = cv.getContext('2d');
+var base = document.createElement('canvas'), bctx = base.getContext('2d');
+var W = 0, H = 0;
+var view = { lat: VIEWS.cm.lat, lng: VIEWS.cm.lng, S: 1 };
+var P = null, R = null, G = null;        // lamps + counts, roads, rivers
+var SP = null, NAMES = null, TR = null;  // specks, lamp names (on first tap), traffic (in rush bands)
+var igniteAt = 0, speckAt = 0;
+var LV = {};                             // live files
+var lamps = null;                        // {n, open: Uint8Array}
+var simOffset = 0, fast = false, lastMow = -1;
+/* ?at=2026-10-03T21:30 shows the city at that Bangkok time */
+var QS = new URLSearchParams(location.search), AT = QS.get('at');
+if (QS.has('card')) document.documentElement.classList.add('card');
+/* ?embed=1 — inside the front page: a finger scrolls the page, not the map */
+var EMBED = QS.has('embed');
+if (EMBED) document.documentElement.classList.add('embed');
+function embedLang() {
+  var r = document.documentElement, l = null;
+  try { l = localStorage.getItem('md-lang'); } catch (e) { }
+  if (l !== 'th' && l !== 'en') l = /bot|crawl|spider|slurp|preview|lighthouse/i.test(navigator.userAgent) ? null : /^th/i.test(navigator.language || '') ? 'th' : 'en';
+  r.classList.remove('lang-th', 'lang-en'); if (l) r.classList.add('lang-' + l);
+  dirty = true; if (typeof chips === 'function') chips();
+}
+if (EMBED) { embedLang(); addEventListener('storage', function (e) { if (e.key === 'md-lang') embedLang(); }); }
+if (AT && !isNaN(Date.parse(AT + ':00+07:00'))) simOffset = Date.parse(AT + ':00+07:00') - Date.now();
+var flares = [], hits = null, hitsAt = 0, drops = [];
+var dirty = true, gest = null, fling = null;
+var baseView = null, baseAt = 0, groundFill = '#070b11';
+
+/* ------------------------------------------------------------ time */
+function now() { return Date.now() + simOffset; }
+function bkk(t) { return new Date(t + 7 * 3600e3); }          // read with getUTC*
+function mow(t) { var d = bkk(t); return ((d.getUTCDay() + 6) % 7) * 1440 + d.getUTCHours() * 60 + d.getUTCMinutes(); }
+function ymd(t) { return bkk(t).toISOString().slice(0, 10); }
+function hhmm(t) { return bkk(t).toISOString().slice(11, 16); }
+function hourKey(t) { return bkk(t).toISOString().slice(0, 13) + ':00'; }
+var DAY_TH = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัสบดี', 'ศุกร์', 'เสาร์'];
+var DAY_EN = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+var MON_TH = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+var MON_EN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/* sun altitude in degrees (low-precision almanac; good to a fraction of a degree) */
+function sunAlt(t, lat, lng) {
+  var r = Math.PI / 180, d = t / 864e5 - 10957.5;
+  var g = (357.529 + 0.98560028 * d) * r, q = 280.459 + 0.98564736 * d;
+  var L = (q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * r, e = (23.439 - 0.00000036 * d) * r;
+  var ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)), dec = Math.asin(Math.sin(e) * Math.sin(L));
+  var gmst = (280.46061837 + 360.98564736629 * d) % 360, H = (gmst + lng) * r - ra;
+  return Math.asin(Math.sin(lat * r) * Math.sin(dec) + Math.cos(lat * r) * Math.cos(dec) * Math.cos(H)) / r;
+}
+function sunTimes(t) {             // sunrise, sunset (ms) for the Bangkok day holding t
+  var d0 = Date.parse(ymd(t) + 'T00:00:00+07:00'), rise = null, set = null, prev = sunAlt(d0, view.lat, view.lng);
+  for (var m = 5; m <= 1440; m += 5) {
+    var a = sunAlt(d0 + m * 6e4, view.lat, view.lng);
+    if (prev < -0.833 && a >= -0.833) rise = d0 + m * 6e4;
+    if (prev >= -0.833 && a < -0.833) set = d0 + m * 6e4;
+    prev = a;
+  }
+  return [rise, set];
+}
+
+/* ------------------------------------------------------------ colour of the ground */
+function mix(a, b, k) {
+  var pa = parseInt(a.slice(1), 16), pb = parseInt(b.slice(1), 16), o = '#';
+  for (var s = 16; s >= 0; s -= 8) {
+    var v = Math.round(((pa >> s) & 255) * (1 - k) + ((pb >> s) & 255) * k);
+    o += (v < 16 ? '0' : '') + v.toString(16);
+  }
+  return o;
+}
+function light() {                 // 0 night … 1 day, through civil twilight
+  var a = sunAlt(now(), view.lat, view.lng);
+  return Math.max(0, Math.min(1, (a + 8) / 14));
+}
+function groundColour(k) {
+  if (k < 0.5) return mix('#070b11', '#2a3346', k * 2);
+  return mix('#2a3346', '#ece6d8', (k - 0.5) * 2);
+}
+
+/* ------------------------------------------------------------ projection */
+function px(lat, lng) { return [W / 2 + (lng - view.lng) * view.S * COS, H / 2 - (lat - view.lat) * view.S]; }
+function unpx(x, y) { return [view.lat - (y - H / 2) / view.S, view.lng + (x - W / 2) / (view.S * COS)]; }
+function go(key) {
+  if (!W || !H) return;
+  var v = VIEWS[key]; view.lat = v.lat; view.lng = v.lng; view.S = Math.min(W, H * 1.15) / v.span; dirty = true;
+  document.querySelectorAll('#where .btn').forEach(function (b) { b.classList.toggle('on', b.dataset.go === key); });
+}
+
+/* ------------------------------------------------------------ open or shut */
+function isOpen(s, m) {
+  var iv = P.schedules[s]; if (!iv) return false;
+  for (var i = 0; i < iv.length; i++) {
+    var a = iv[i][0], b = iv[i][1];
+    if ((m >= a && m < b) || (m + 10080 >= a && m + 10080 < b)) return true;
+  }
+  return false;
+}
+function nextChange(s, m) {        // minutes until this lamp next flips
+  var o = isOpen(s, m);
+  for (var k = 1; k <= 10080; k++) if (isOpen(s, (m + k) % 10080) !== o) return k;
+  return null;
+}
+function relight() {
+  var m = mow(now()); if (m === lastMow) return;
+  var first = lastMow < 0, n = 0; lastMow = m;
+  for (var i = 0; i < lamps.n; i++) {
+    var o = isOpen(P.sched[i], m) ? 1 : 0;
+    if (!first && o !== lamps.open[i] && flares.length < 400) flares.push({ i: i, t: performance.now(), on: o });
+    lamps.open[i] = o; n += o;
+  }
+  lamps.lit = n; dirty = true; readings(); chips();
+}
+
+/* ------------------------------------------------------------ the base layer */
+function glowSprite(col) {
+  var c = document.createElement('canvas'), s = 24; c.width = c.height = s;
+  var g = c.getContext('2d'), gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  gr.addColorStop(0, col); gr.addColorStop(0.1, col + 'dd'); gr.addColorStop(0.3, col + '38'); gr.addColorStop(1, col + '00');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s); return c;
+}
+var SPRITES = {};
+function polyline(c, enc, sc) {
+  var la = enc[0], ln = enc[1], p = px(la / sc, ln / sc); c.moveTo(p[0], p[1]);
+  for (var i = 2; i < enc.length; i += 2) { la += enc[i]; ln += enc[i + 1]; p = px(la / sc, ln / sc); c.lineTo(p[0], p[1]); }
+}
+function inView(lat, lng, m) {
+  var p = px(lat, lng); return p[0] > -m && p[0] < W + m && p[1] > -m && p[1] < H + m;
+}
+/* ------------------------------------------------------------ thinning by zoom
+   Nan, 2026-10-02: the further out, the fewer dots. One dot per grid cell, the
+   grid fixed to the ground so a pan does not reshuffle it; the cell shrinks as
+   the view closes in, down to 4 px. Lamps claim cells first,
+   open before shut, in antRank order (lamps.json is sorted that way). */
+function zoomOf(S) { return Math.log(S * 360 / 256) / Math.LN2; }
+function cellPx() { return Math.max(4, Math.min(16, 16 - 1.6 * (zoomOf(view.S) - 8))); }
+function cellOf(lat, lng, cell) { return Math.floor(lat * view.S / cell) * 1e7 + Math.floor(lng * view.S * COS / cell); }
+/* ------------------------------------------------------------ the glow of open streets
+   Nan, 2026-10-02: "a hint of conditional glowmap behind, reflecting open business
+   areas". Every open place in reach (not only the thinned dots) adds to a density field,
+   built at a quarter of the screen and coloured by a ramp; it dims as the city shuts, and
+   with kinds switched on it follows only their open places. The radius is ~275 m on the
+   ground, so a street reads the same at every zoom. */
+var GLOW = document.createElement('canvas'), gctx = GLOW.getContext('2d', { willReadFrequently: true });
+var GLOW_DOT = (function () {
+  var c = document.createElement('canvas'), s = 32; c.width = c.height = s;
+  var g = c.getContext('2d'), gr = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.45, 'rgba(255,255,255,.45)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s); return c;
+})();
+function glowRamp(stops) {
+  var lut = new Uint8ClampedArray(1024);
+  for (var i = 0; i < 256; i++) {
+    var t = 1 - Math.exp(-i / 90), j = 0;
+    while (j < stops.length - 2 && t > stops[j + 1][0]) j++;
+    var a = stops[j], b = stops[j + 1], k = Math.max(0, Math.min(1, (t - a[0]) / (b[0] - a[0])));
+    for (var q = 1; q < 5; q++) lut[i * 4 + q - 1] = a[q] + (b[q] - a[q]) * k;
+  }
+  return lut;
+}
+var GLOW_NIGHT = glowRamp([[0, 255, 120, 40, 0], [0.3, 255, 125, 45, 22], [0.7, 255, 170, 80, 70], [1, 255, 225, 170, 115]]);
+var GLOW_DAY = glowRamp([[0, 240, 150, 70, 0], [0.4, 240, 150, 70, 12], [1, 225, 120, 50, 52]]);
+function drawGlow(c, day, f) {
+  if (!lamps || f <= 0) return;
+  var q = 4, gw = Math.ceil(W / q), gh = Math.ceil(H / q);
+  if (GLOW.width !== gw || GLOW.height !== gh) { GLOW.width = gw; GLOW.height = gh; }
+  gctx.setTransform(1, 0, 0, 1, 0, 0); gctx.globalCompositeOperation = 'source-over'; gctx.clearRect(0, 0, gw, gh);
+  var r = Math.max(12, Math.min(64, 0.0025 * view.S)), m = mow(now()), n = 0;
+  gctx.globalCompositeOperation = 'lighter'; gctx.globalAlpha = 0.09;
+  function add(lat, lng) {
+    var p = px(lat, lng); if (p[0] < -r || p[0] > W + r || p[1] < -r || p[1] > H + r) return;
+    gctx.drawImage(GLOW_DOT, (p[0] - r) / q, (p[1] - r) / q, 2 * r / q, 2 * r / q); n++;
+  }
+  var on = KON.filter(function (k) { return KD[k] && KD[k].lat; }), i;
+  if (!on.length) { for (i = 0; i < lamps.n; i++) if (lamps.open[i]) add(P.lat[i], P.lng[i]); }
+  else on.forEach(function (k) { var d = KD[k]; for (var i = 0; i < d.n; i++) if (d.sched[i] >= 0 && isOpen(d.sched[i], m)) add(d.lat[i], d.lng[i]); });
+  if (!n) return;
+  var img = gctx.getImageData(0, 0, gw, gh), px4 = img.data, lut = day ? GLOW_DAY : GLOW_NIGHT;
+  for (i = 0; i < px4.length; i += 4) {
+    var a = px4[i + 3] * 4;
+    px4[i] = lut[a]; px4[i + 1] = lut[a + 1]; px4[i + 2] = lut[a + 2]; px4[i + 3] = lut[a + 3];
+  }
+  gctx.globalCompositeOperation = 'source-over'; gctx.globalAlpha = 1; gctx.putImageData(img, 0, 0);
+  c.save(); c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high'; c.globalAlpha = f;
+  c.globalCompositeOperation = day ? 'multiply' : 'lighter';
+  c.drawImage(GLOW, 0, 0, gw * q, gh * q); c.restore();
+}
+var DRAWN = [], DOT_R = 4;             // the marks in the current base, for taps and names
+function drawBase() {
+  var k = light(), day = k > 0.62, c = bctx; dirty = false;
+  baseView = { lat: view.lat, lng: view.lng, S: view.S }; baseAt = performance.now();
+  document.body.classList.toggle('day', day);
+  c.setTransform(DPR, 0, 0, DPR, 0, 0);
+  c.globalCompositeOperation = 'source-over';
+  c.fillStyle = groundFill = groundColour(k); c.fillRect(0, 0, W, H);
+  var ink = day ? '0,0,0' : '255,255,255';
+
+  /* provinces, at the wide view */
+  if (G && view.S < 3000) {
+    c.strokeStyle = 'rgba(' + ink + ',.16)'; c.lineWidth = 1;
+    G.provinces.forEach(function (p) { (p.rings || []).forEach(function (ring) {
+      c.beginPath(); ring.forEach(function (q, j) { var a = px(q[0], q[1]); j ? c.lineTo(a[0], a[1]) : c.moveTo(a[0], a[1]); }); c.stroke(); }); });
+  }
+
+  /* traffic: TomTom's year, for this hour's band */
+  var hr = bkk(now()).getUTCHours(), band = hr >= 7 && hr < 9 ? 1 : hr >= 16 && hr < 19 ? 2 : 0;
+  if (band && !TR) { TR = { hex: [] }; j('data/traffic.json').then(function (d) { TR = d; dirty = true; }, function () { }); }
+  if (TR && view.S > 2500 && band) {
+    TR.hex.forEach(function (x) {
+      var v = x[band - 1]; if (v < 30) return;
+      c.fillStyle = 'rgba(255,90,70,' + Math.min(0.13, (v - 30) / 300) + ')';
+      c.beginPath(); x[2].forEach(function (q, j) { var a = px(q[0], q[1]); j ? c.lineTo(a[0], a[1]) : c.moveTo(a[0], a[1]); }); c.fill();
+    });
+  }
+
+  /* the glow of open streets, under everything that has a line or a dot */
+  var gIg = REDUCED ? 1 : Math.min(1, (performance.now() - igniteAt) / 1500);
+  drawGlow(c, day, gIg);
+  if (gIg < 1) dirty = true;
+
+  /* rivers; the Ping at the width its gauge reads */
+  if (G) {
+    var ping = LV.ping && LV.ping.stations && LV.ping.stations.filter(function (s) { return s.id === 'P.1'; })[0];
+    var frac = ping ? Math.max(0.15, Math.min(1.2, ping.level / ping.limit)) : 0.4;
+    G.rivers.forEach(function (r) {
+      var isPing = r.en === 'Ping';
+      c.strokeStyle = day ? 'rgba(40,110,170,.55)' : 'rgba(80,150,210,.55)';
+      c.lineWidth = isPing ? Math.max(1.2, Math.min(18, frac * view.S / 900)) : 1.2;
+      c.lineJoin = c.lineCap = 'round';
+      r.lines.forEach(function (ln) { c.beginPath(); ln.forEach(function (q, j) { var a = px(q[0], q[1]); j ? c.lineTo(a[0], a[1]) : c.moveTo(a[0], a[1]); }); c.stroke(); });
+    });
+  }
+
+  /* roads */
+  if (R && view.S > 1500) {
+    var z = Math.min(1, (view.S - 1500) / 6000);
+    [['minor', 0.10 * z, 0.6], ['mid', 0.18 * z + 0.04, 0.9], ['major', 0.30, 1.4]].forEach(function (L) {
+      if (L[1] <= 0.01) return;
+      c.strokeStyle = 'rgba(' + ink + ',' + L[1] + ')'; c.lineWidth = L[2]; c.beginPath();
+      R[L[0]].forEach(function (e) { polyline(c, e, R.scale); }); c.stroke();
+    });
+  }
+
+  /* the marks. Nan, 2026-10-02: fewer and larger, and legible without switching
+     anything off — at rest the map shows the open places, thinned; a kind switched on
+     (hotels, spirit houses …) shows every place of that kind instead, open or not */
+  var tnow = performance.now(), z = zoomOf(view.S), taken = new Set(), i, p;
+  DRAWN = [];
+  if (!lamps) { drawLabels(c, day); return; }
+  var on = KON.filter(function (k) { return KD[k] && KD[k].lat; });
+  var cell = Math.max(16, Math.min(36, 36 - 3.2 * (z - 11)));
+  var rD = z < 11 ? 3.5 : z < 13 ? 4.5 : z < 15 ? 5.5 : 6.5, m = mow(now());
+  function claim(lat, lng) {
+    var q = px(lat, lng); if (q[0] < -10 || q[0] > W + 10 || q[1] < -10 || q[1] > H + 10) return null;
+    var ck = cellOf(lat, lng, cell); if (taken.has(ck)) return null; taken.add(ck); return q;
+  }
+  if (!on.length) {
+    for (i = 0; i < lamps.n; i++) {
+      if (!lamps.open[i]) continue;
+      p = claim(P.lat[i], P.lng[i]); if (p) DRAWN.push({ x: p[0], y: p[1], g: P.groups[P.g[i]], lamp: i, st: 1 });
+    }
+  } else {
+    /* round robin, so each kind switched on gets its share of the cells */
+    var most = 0; on.forEach(function (k) { most = Math.max(most, KD[k].n); });
+    for (i = 0; i < most; i++) on.forEach(function (k) {
+      var d = KD[k]; if (i >= d.n) return;
+      var q = claim(d.lat[i], d.lng[i]); if (!q) return;
+      var sc = d.sched[i];
+      DRAWN.push({ x: q[0], y: q[1], g: k, kind: k, i: i, st: sc < 0 ? 0 : isOpen(sc, m) ? 1 : -1 });
+    });
+  }
+  var ig = REDUCED ? 1e9 : tnow - igniteAt, igniting = ig < 1500;
+  var ring = day ? 'rgba(255,255,255,.95)' : 'rgba(5,8,14,.9)';
+  if (!day) {                                    // the glow under the lamps at night
+    c.globalCompositeOperation = 'lighter';
+    DRAWN.forEach(function (d, j) {
+      if (d.st !== 1) return;
+      var f = igniting ? Math.max(0, Math.min(1, (ig - (j * 7919 % 1100)) / 380)) : 1, gs = rD * 6;
+      c.globalAlpha = 0.55 * f;
+      c.drawImage(SPRITES[d.g] || (SPRITES[d.g] = glowSprite(GROUPS[d.g][0])), d.x - gs / 2, d.y - gs / 2, gs, gs);
+    });
+    c.globalCompositeOperation = 'source-over'; c.globalAlpha = 1;
+  }
+  DRAWN.forEach(function (d, j) {
+    var col = GROUPS[d.g] ? GROUPS[d.g][day ? 1 : 0] : '#888';
+    c.globalAlpha = igniting && d.lamp != null ? Math.max(0, Math.min(1, (ig - (j * 7919 % 1100)) / 380)) : 1;
+    c.beginPath(); c.arc(d.x, d.y, rD, 0, 6.2832);
+    if (d.st === -1) { c.lineWidth = 2.5; c.strokeStyle = ring; c.stroke(); c.lineWidth = 1.6; c.strokeStyle = col; c.stroke(); }
+    else { c.fillStyle = col; c.fill(); c.lineWidth = 1.5; c.strokeStyle = ring; c.stroke(); }
+  });
+  c.globalAlpha = 1; DOT_R = rD;
+  drawLabels(c, day);
+  if (igniting) dirty = true;
+}
+
+/* ------------------------------------------------------------ names on the map
+   Nan, 2026-10-02: "place names should be visible, or some kind of legend/key that
+   encourages clicks, zooms, interest". The ย่าน and landmarks (labels.json) from
+   further out, the open places' own names once the view is close; a name is a tap
+   target: a landmark zooms there, a place opens its card. */
+var LABELS = null, LHITS = [], anim = null;
+var SHOW_AT = [0, 0, 2600, 5200, 9000, 9000, 20000];      // view.S at which each rank appears
+var CLOSE = 6000;                                        // the places' own names, from here in
+/* Nan, 2026-10-02: "roughly 20 named places per zoom level" — the names on screen
+   stop at NAMES_CAP, most important first, so each step in shows a new ~20 */
+var NAMES_CAP = 20;
+function lang() { var c = document.documentElement.classList; return c.contains('lang-en') ? 'en' : 'th'; }
+function clearBand() {
+  if (!EMBED) return [0, 0];
+  var t = document.getElementById('top').getBoundingClientRect().bottom + 4, u = document.getElementById('mapui');
+  var b = u ? H - u.querySelector('.foot').getBoundingClientRect().top + 4 : 0;
+  return [t, Math.max(0, b)];
+}
+function drawLabels(c, day) {
+  LHITS = [];
+  if (!W || !H) return;
+  var taken = [], L = lang(), band = clearBand(), halo = day ? 'rgba(255,255,255,.88)' : 'rgba(5,8,14,.88)';
+  function put(x, y, text, size, weight, col, hit, dot) {
+    if (LHITS.length >= NAMES_CAP) return;
+    c.font = weight + ' ' + size + 'px "Sarabun", system-ui, sans-serif';
+    var w = c.measureText(text).width, h = size;
+    var b = dot === 'mark' ? [x - 2, y - h / 2 - 3, x + w + 3, y + h / 2 + 3] : dot ? [x - 5, y - h / 2 - 3, x + 9 + w + 3, y + h / 2 + 3] : [x - w / 2 - 4, y - h / 2 - 3, x + w / 2 + 4, y + h / 2 + 3];
+    if (b[0] < 4 || b[2] > W - (EMBED ? 64 : 4) || b[1] < band[0] || b[3] > H - band[1]) return;
+    for (var i = 0; i < taken.length; i++) { var t = taken[i]; if (b[0] < t[2] && b[2] > t[0] && b[1] < t[3] && b[3] > t[1]) return; }
+    taken.push(b);
+    c.lineJoin = 'round'; c.lineWidth = 4; c.strokeStyle = halo; c.fillStyle = col; c.textBaseline = 'middle';
+    var tx = dot === 'mark' ? x : dot ? x + 9 : x - w / 2;
+    if (dot === true) { c.beginPath(); c.arc(x + 1, y, 4, 0, 6.2832); c.stroke(); c.fill(); }
+    c.strokeText(text, tx, y); c.fillText(text, tx, y);
+    LHITS.push({ b: b, hit: hit });
+  }
+  function marks(keep) {
+    if (LABELS) LABELS.forEach(function (r) {
+      if (!keep(r) || (r.k === 'town' ? view.S > 6000 : view.S < SHOW_AT[r.r] || (r.k === 'zone' && view.S > 40000))) return;
+      var p = px(r.lat, r.lng), t = L === 'en' ? r.en : r.th;
+      if (r.k === 'zone' || r.k === 'town') put(p[0], p[1], t, r.k === 'zone' ? 18 : 16, 800, day ? 'rgba(20,30,45,.66)' : 'rgba(255,255,255,.82)', { lat: r.lat, lng: r.lng }, false);
+      else put(p[0], p[1], t, 14, 700, day ? '#5a3b00' : '#ffe2a8', { lat: r.lat, lng: r.lng }, true);
+    });
+  }
+  var THAI = /[\u0E00-\u0E7F]/;
+  function nameIn(row, L) {
+    var th = row[0] || '', en = row[1] || '';
+    if (L === 'en') return en && !THAI.test(en) ? en : !THAI.test(th) ? th : '';
+    return THAI.test(th) ? th : THAI.test(en) ? en : '';
+  }
+  function nameOf(d) {
+    var nm = d.lamp != null ? (NAMES ? NAMES[d.lamp] : null) : KD[d.kind].names[d.i];
+    return nm ? nameIn(nm, L) : '';
+  }
+  function places() {
+    for (var i = 0; i < DRAWN.length && LHITS.length < NAMES_CAP; i++) {
+      var d = DRAWN[i], nm = nameOf(d); if (!nm) continue; if (nm.length > 26) nm = nm.slice(0, 25) + '…';
+      put(d.x + DOT_R + 4, d.y, nm, 14, 700, d.st === -1 ? (day ? '#3a4656' : '#d8dee8') : GROUPS[d.g][day ? 1 : 0], { d: d }, 'mark');
+    }
+  }
+  /* the ย่าน and the big landmarks, then the places' own names (why one zooms in),
+     then the smaller landmarks */
+  marks(function (r) { return r.r <= 3; });
+  var close = DRAWN.length && view.S >= CLOSE;
+  if (close && !NAMES && !showTip.loading) { showTip.loading = true; j('data/names.json').then(function (d) { NAMES = d; dirty = true; }); }
+  if (close) places();
+  marks(function (r) { return r.r > 3; });
+}
+function zoomTo(lat, lng, S) {
+  S = Math.max(150, Math.min(60000, S)); tip.style.display = 'none'; fling = null;
+  document.querySelectorAll('#where .btn').forEach(function (b) { b.classList.remove('on'); });
+  if (REDUCED) { view.lat = lat; view.lng = lng; view.S = S; dirty = true; return; }
+  anim = { t0: performance.now(), a: { lat: view.lat, lng: view.lng, S: view.S }, b: { lat: lat, lng: lng, S: S } };
+}
+function stepAnim(t) {
+  if (!anim) return;
+  var k = Math.min(1, (t - anim.t0) / 520), e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2, a = anim.a, b = anim.b;
+  view.S = Math.exp(Math.log(a.S) + (Math.log(b.S) - Math.log(a.S)) * e);
+  view.lat = a.lat + (b.lat - a.lat) * e; view.lng = a.lng + (b.lng - a.lng) * e; dirty = true;
+  if (k >= 1) anim = null;
+}
+function homeS() { var v = VIEWS[view.lat > 19.5 ? 'cr' : 'cm']; return Math.min(W, H * 1.15) / v.span; }
+
+/* the key: one chip per kind; a tap switches that kind's places on (or off again).
+   What a reader switched on comes back on their next visit. */
+var KON = [], KD = {}, KN = null;
+try { KON = JSON.parse(localStorage.getItem('md-citykinds') || '[]').filter(function (k) { return GROUPS[k]; }); } catch (e) { KON = []; }
+function loadKind(k) {
+  if (KD[k]) return;
+  KD[k] = { loading: true };
+  j('data/k/' + k + '.json').then(function (d) {
+    var n = d.p.length / 3, o = { n: n, lat: new Float64Array(n), lng: new Float64Array(n), sched: new Int16Array(n), names: d.names };
+    for (var i = 0; i < n; i++) { o.lat[i] = d.base[0] + d.p[i * 3] / d.q; o.lng[i] = d.base[1] + d.p[i * 3 + 1] / d.q; o.sched[i] = d.p[i * 3 + 2]; }
+    KD[k] = o; dirty = true; chips();
+  }, function () { delete KD[k]; KON = KON.filter(function (x) { return x !== k; }); chips(); });
+}
+function chips() {
+  var el = document.getElementById('chips'); if (!el || !lamps) return;
+  var cnt = {}; (KN ? KN.kinds : []).forEach(function (r) { cnt[r.id] = r.n; });
+  var h = '';
+  KIND_ORDER.forEach(function (k) {
+    if (KN ? !cnt[k] : !GROUPS[k]) return;
+    var onk = KON.indexOf(k) >= 0, busy = onk && KD[k] && KD[k].loading;
+    h += '<button type="button" data-g="' + k + '" aria-pressed="' + onk + '"><i style="background:' + GROUPS[k][0] + '"></i>' +
+      bi(GROUPS[k][2], GROUPS[k][3]) + '<b>' + (busy ? '…' : cnt[k] ? n(cnt[k]) : '') + '</b></button>';
+  });
+  el.innerHTML = h;
+}
+function setFilter(k) {
+  var at = KON.indexOf(k);
+  if (at >= 0) KON.splice(at, 1); else { KON.push(k); loadKind(k); }
+  try { localStorage.setItem('md-citykinds', JSON.stringify(KON)); } catch (e) { }
+  tip.style.display = 'none'; hint(false); dirty = true; chips(); legend();
+}
+document.addEventListener('click', function (e) {
+  var b = e.target.closest && e.target.closest('[data-g]'); if (b) { setFilter(b.dataset.g); return; }
+  var z = e.target.closest && e.target.closest('[data-z]'); if (!z) return;
+  var c = unpx(W / 2, H / 2);
+  if (z.dataset.z === 'in') zoomTo(c[0], c[1], view.S * 2);
+  else if (z.dataset.z === 'out') zoomTo(c[0], c[1], view.S / 2);
+  else { var v = VIEWS[view.lat > 19.5 ? 'cr' : 'cm']; zoomTo(v.lat, v.lng, homeS()); }
+});
+
+/* ------------------------------------------------------------ weather over the map */
+function wxNow() {
+  var w = LV.weather; if (!w) return null;
+  var city = w.cities.filter(function (c) { return c.id === (view.lat > 19.5 ? 'chiang-rai' : 'chiang-mai'); })[0] || w.cities[0];
+  var hk = hourKey(now()), row = null;
+  (city.hours || []).forEach(function (h) { if (h[0] === hk) row = h; });
+  return { city: city, prob: row ? row[1] : null, mm: row ? row[2] : null, inRange: !!row };
+}
+function airNow() {
+  var a = LV.air; if (!a) return null;
+  return a.places.filter(function (p) { return p.id === (view.lat > 19.5 ? 'chiang-rai' : 'chiang-mai'); })[0] || null;
+}
+function tickRain(dt) {
+  var w = wxNow(), mm = w && w.mm != null ? w.mm : 0, prob = w && w.prob != null ? w.prob : 0;
+  var want = REDUCED ? 0 : Math.round(Math.min(900, (mm > 0 ? 60 + mm * 160 : 0) * (0.4 + prob / 160)));
+  while (drops.length < want) drops.push({ x: Math.random() * (W + 200), y: Math.random() * H, v: 500 + Math.random() * 400 });
+  drops.length = Math.min(drops.length, want);
+  if (!drops.length) return;
+  ctx.strokeStyle = document.body.classList.contains('day') ? 'rgba(40,70,110,.28)' : 'rgba(170,200,235,.30)';
+  ctx.lineWidth = 1; ctx.beginPath();
+  for (var i = 0; i < drops.length; i++) {
+    var d = drops[i]; d.y += d.v * dt; d.x -= d.v * dt * 0.18;
+    if (d.y > H) { d.y = -10; d.x = Math.random() * (W + 200); }
+    ctx.moveTo(d.x, d.y); ctx.lineTo(d.x + 2.5, d.y - 12);
+  }
+  ctx.stroke();
+}
+function veils() {
+  var w = wxNow(), a = airNow();
+  if (w && w.city.code >= 3 && !simOffset) { ctx.fillStyle = 'rgba(120,130,145,.08)'; ctx.fillRect(0, 0, W, H); }
+  if (a && a.pm25 > 37.5) { ctx.fillStyle = 'rgba(190,150,90,' + Math.min(0.28, (a.pm25 - 37.5) / 250) + ')'; ctx.fillRect(0, 0, W, H); }
+}
+
+/* ------------------------------------------------------------ frame */
+var lastT = performance.now();
+function frame(t) {
+  var dt = Math.min(0.05, (t - lastT) / 1000); lastT = t;
+  if (fast) { simOffset += dt * 1440 * 1000; }
+  if (innerWidth !== W || innerHeight !== H) size();
+  if (W && H) {
+    if (lamps) relight();
+    if (fast && ((t / 400) | 0) !== frame.k) { frame.k = (t / 400) | 0; dirty = true; }
+    stepAnim(t); stepFling(t);
+    /* while a hand or an animation moves the view, the last base is stretched to it
+       and redrawn a few times a second; at rest it is redrawn at once */
+    var moving = gest || anim || fling;
+    if (dirty && (!moving || !baseView || t - baseAt > 140)) drawBase();
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    var b = baseView, k = view.S / b.S;
+    var ox = W / 2 * (1 - k) + (b.lng - view.lng) * view.S * COS, oy = H / 2 * (1 - k) - (b.lat - view.lat) * view.S;
+    if (k !== 1 || ox || oy) { ctx.fillStyle = groundFill; ctx.fillRect(0, 0, W, H); } else ctx.clearRect(0, 0, W, H);
+    ctx.drawImage(base, ox, oy, W * k, H * k);
+    veils();
+    drawFlares(t);
+    drawHits(t);
+    tickRain(dt);
+    if (fast || ((t / 1000) | 0) !== frame.s) { frame.s = (t / 1000) | 0; clock(); }
+  }
+  requestAnimationFrame(frame);
+}
+function drawFlares(t) {
+  if (REDUCED) { flares.length = 0; return; }
+  var day = document.body.classList.contains('day');
+  flares = flares.filter(function (f) {
+    var a = (t - f.t) / 1400; if (a > 1) return false;
+    var p = px(P.lat[f.i], P.lng[f.i]), col = GROUPS[P.groups[P.g[f.i]]][day ? 1 : 0];
+    ctx.strokeStyle = f.on ? col : 'rgba(150,150,150,' + (1 - a) + ')';
+    ctx.globalAlpha = 1 - a; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(p[0], p[1], 3 + a * 22, 0, 6.2832); ctx.stroke();
+    ctx.globalAlpha = 1; return true;
+  });
+}
+
+/* ------------------------------------------------------------ the engine's hits */
+var TIER_COL = { exact: '#ffffff', thesaurus: '#ffb347', loose: '#ff7eb6', partial: '#8fb3ff' };
+function drawHits(t) {
+  if (!hits) return;
+  ctx.fillStyle = document.body.classList.contains('day') ? 'rgba(236,230,216,.62)' : 'rgba(4,7,11,.62)';
+  ctx.fillRect(0, 0, W, H);
+  var el = t - hitsAt;
+  for (var i = 0; i < hits.length; i++) {
+    var h = hits[i], at = REDUCED ? 0 : i * 18; if (el < at) break;
+    var p = px(h.lat, h.lng), a = Math.min(1, (el - at) / 500);
+    var col = TIER_COL[h.tier] || '#ffb347', dim = h.gone ? 0.25 : 1;
+    ctx.globalAlpha = dim;
+    if (a < 1) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p[0], p[1], 4 + (1 - a) * 26, 0, 6.2832); ctx.stroke(); }
+    ctx.fillStyle = col; ctx.beginPath(); ctx.arc(p[0], p[1], h.rank < 10 ? 5 : 3, 0, 6.2832); ctx.fill();
+    if (h.open === true) { ctx.strokeStyle = '#7fd8a4'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(p[0], p[1], 8, 0, 6.2832); ctx.stroke(); }
+    if (h.rank < 3 && a >= 1) {
+      ctx.font = '600 12px Sarabun, system-ui, sans-serif'; ctx.fillStyle = document.body.classList.contains('day') ? '#111' : '#fff';
+      ctx.fillText((h.rank + 1) + ' ' + h.name, p[0] + 9, p[1] + 4);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ------------------------------------------------------------ the words around the map */
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function bi(th, en) { return '<span class="bi"><span class="th">' + th + '</span><span class="en">' + en + '</span></span>'; }
+function n(x) { return Number(x).toLocaleString('en-US'); }
+function clock() {
+  var t = now(), d = bkk(t);
+  document.getElementById('clock').textContent = hhmm(t);
+  document.getElementById('day').innerHTML = bi(DAY_TH[d.getUTCDay()] + ' ' + d.getUTCDate() + ' ' + MON_TH[d.getUTCMonth()],
+    DAY_EN[d.getUTCDay()].slice(0, 3) + ' ' + d.getUTCDate() + ' ' + MON_EN[d.getUTCMonth()]);
+}
+function row(k, html) { return '<div class="row"><span class="k">' + k + '</span><span class="v">' + html + '</span></div>'; }
+function spark(vals, lim) {
+  var w = 120, h = 22, mx = Math.max(lim || 0, Math.max.apply(null, vals)) || 1, mn = Math.min.apply(null, vals);
+  mn = Math.min(mn, 0);
+  var pts = vals.map(function (v, i) { return (i / (vals.length - 1) * w).toFixed(1) + ',' + (h - (v - mn) / (mx - mn) * h).toFixed(1); }).join(' ');
+  var ly = lim ? (h - (lim - mn) / (mx - mn) * h).toFixed(1) : null;
+  return '<svg width="' + w + '" height="' + h + '" style="vertical-align:middle;margin-left:6px">' +
+    (ly ? '<line x1="0" x2="' + w + '" y1="' + ly + '" y2="' + ly + '" stroke="#ff7b72" stroke-dasharray="3 3" stroke-width="1"/>' : '') +
+    '<polyline fill="none" stroke="#5fb3d6" stroke-width="1.5" points="' + pts + '"/></svg>';
+}
+function readings() {
+  var t = now(), out = '';
+  if (!lamps) document.getElementById('lit').innerHTML = bi('กำลังจุดไฟ…', 'lighting the lamps…');
+  else document.getElementById('lit').innerHTML =
+    '<b>' + n(lamps.lit) + '</b> / ' + n(lamps.n) + ' ' + bi('ร้านเปิดอยู่', 'open now') +
+    '<div class="sub" style="font-size:12px;color:var(--mute)">' + bi(n(P.count) + ' ที่ · จุดไม่มีไฟ = ไม่รู้เวลาเปิด', n(P.count) + ' places · unlit: hours not held') + '</div>';
+
+  /* sky */
+  var st = sunTimes(t), alt = sunAlt(t, view.lat, view.lng);
+  var sky = alt > 0 ? bi('พระอาทิตย์สูง ' + Math.round(alt) + '°', 'sun ' + Math.round(alt) + '° up') :
+                      bi('ฟ้ามืด', 'sun ' + Math.round(-alt) + '° below');
+  sky += '<small>ขึ้น rise ' + (st[0] ? hhmm(st[0]) : '–') + ' · ตก set ' + (st[1] ? hhmm(st[1]) : '–') + '</small>';
+  out += row('SKY', sky);
+
+  /* rain + temperature */
+  var w = wxNow();
+  if (w) {
+    var line = w.inRange ? (w.mm > 0
+      ? bi('ฝน ' + w.mm + ' มม. ชั่วโมงนี้ (โอกาส ' + w.prob + '%)', 'rain ' + w.mm + ' mm this hour (' + w.prob + '% chance)')
+      : bi('โอกาสฝน ' + w.prob + '% ชั่วโมงนี้', w.prob + '% chance of rain this hour'))
+      : bi('พยากรณ์ไปไม่ถึงชั่วโมงนี้', 'forecast does not reach this hour');
+    if (!simOffset) line += '<small>' + w.city.temp + '°C · ชื้น humidity ' + w.city.humidity + '% · วัดเมื่อ observed ' + w.city.observed.slice(11) + '</small>';
+    out += row('RAIN', line);
+  }
+
+  /* traffic, in the rush bands only */
+  var hr = bkk(t).getUTCHours(), band = hr >= 7 && hr < 9 ? 'am' : hr >= 16 && hr < 19 ? 'pm' : null;
+  if (band && G) out += row('ROAD', bi('ชั่วโมงเร่งด่วน' + (band === 'am' ? 'เช้า' : 'เย็น') + ' · ช่องสีแดง = ถนนช้า', (band === 'am' ? 'morning' : 'evening') + ' rush: red cells are slow') +
+    '<small>ค่าเฉลี่ยทั้งปี 2025 จาก TomTom ไม่ใช่รถติดวันนี้ · TomTom 2025 average for this band, not today\'s jams</small>');
+
+  /* air */
+  var a = airNow();
+  if (a && a.band) out += row('AIR', '<span style="color:' + a.band.colour + '">●</span> PM2.5 ' + a.pm25 + ' µg/m³ · ' + bi(a.band.th, a.band.en) +
+    '<small>แบบจำลอง CAMS ไม่ใช่เครื่องวัดริมถนน · CAMS model, not a street monitor</small>');
+
+  /* the Ping */
+  var ping = LV.ping && LV.ping.stations && LV.ping.stations.filter(function (s) { return s.id === 'P.1'; })[0];
+  if (ping) {
+    var vals = (ping.hours || []).slice(-96).map(function (h) { return h[1]; });
+    out += row('PING', bi('แม่น้ำปิง สะพานนวรัฐ ' + ping.level + ' ม.', 'the Ping at Nawarat Bridge, ' + ping.level + ' m') +
+      (vals.length > 3 ? spark(vals, ping.limit) : '') +
+      '<small>ระดับเตือน alert at ' + ping.limit + ' m · ' + ping.observed.replace('T', ' ') + ' · เส้นแม่น้ำบนแผนที่กว้างตามระดับ · the river on the map is drawn to this level</small>');
+  }
+
+  /* moon */
+  var sk = LV.sky && LV.sky.days && LV.sky.days[ymd(t)];
+  if (sk && sk.moon) {
+    var mo = sk.moon;
+    out += row('MOON', bi('พระจันทร์ ' + mo.thai_label_th + (mo.wan_phra ? ' · วันพระ' : ''),
+      'moon ' + Math.round(mo.illum * 100) + '% lit, ' + mo.thai_label_en + (mo.wan_phra ? ', a wan phra' : '')));
+  }
+
+  /* on now */
+  var ev = LV.events && LV.events.events;
+  if (ev) {
+    var tn = t, onNow = [], next = [];
+    ev.forEach(function (e) {
+      if (e.all_day || !e.start) return;
+      var s = Date.parse(e.start.replace(' ', 'T') + '+07:00'), en = e.end ? Date.parse(e.end.replace(' ', 'T') + '+07:00') : s + 2 * 3600e3;
+      if (s <= tn && tn < en) onNow.push(e); else if (s > tn && s - tn < 6 * 3600e3) next.push([s, e]);
+    });
+    next.sort(function (x, y) { return x[0] - y[0]; });
+    var lines = onNow.slice(0, 3).map(function (e) { return '<b>' + esc(e.title) + '</b>' + (e.venue_name ? ' · ' + esc(e.venue_name) : ''); });
+    if (!lines.length && next.length) lines = next.slice(0, 2).map(function (x) { return hhmm(x[0]) + ' ' + esc(x[1].title) + (x[1].venue_name ? ' · ' + esc(x[1].venue_name) : ''); });
+    if (lines.length) out += row(onNow.length ? 'NOW' : 'NEXT', lines.join('<br>') +
+      '<small><a href="/events.html">' + (onNow.length ? 'กำลังมีงาน · on now' : 'งานถัดไป · coming up') + ' →</a></small>');
+  }
+  document.getElementById('rows').innerHTML = out;
+}
+function legend() {
+  var day = document.body.classList.contains('day'), h = '';
+  KIND_ORDER.forEach(function (k) { h += '<span data-g="' + k + '"' + (KON.indexOf(k) >= 0 ? ' class="on"' : '') + '><i style="background:' + GROUPS[k][day ? 1 : 0] + '"></i>' + GROUPS[k][2] + '<span class="en"> ' + GROUPS[k][3] + '</span></span>'; });
+  document.getElementById('legend').innerHTML = h;
+}
+
+function hint(on) { var h = document.getElementById('hint'); if (h && !on) h.classList.add('gone'); }
+/* ------------------------------------------------------------ tapping a lamp */
+var tip = document.getElementById('tip');
+function showTip(x, y) {
+  tip.style.display = 'none';
+  hint(false);
+  var best = null, bd = 18 * 18;
+  for (var q = 0; q < LHITS.length; q++) {
+    var hb = LHITS[q].b; if (x < hb[0] || x > hb[2] || y < hb[1] || y > hb[3]) continue;
+    var hh = LHITS[q].hit;
+    if (hh.d) { best = { d: hh.d }; break; }
+    zoomTo(hh.lat, hh.lng, Math.max(view.S * 2.2, SHOW_AT[3] * 1.2)); return 'zoom';
+  }
+  if (!lamps) return;
+  if (!best && hits) hits.forEach(function (h) { var p = px(h.lat, h.lng), d = (p[0] - x) * (p[0] - x) + (p[1] - y) * (p[1] - y); if (d < bd) { bd = d; best = { hit: h }; } });
+  if (!best) DRAWN.forEach(function (m) { var d = (m.x - x) * (m.x - x) + (m.y - y) * (m.y - y); if (d < bd) { bd = d; best = { d: m }; } });
+  if (!best) { if (EMBED) { zoomAt(x, y, 2); return 'zoom'; } return; }
+  var html;
+  if (best.hit) {
+    var h = best.hit;
+    html = '<b>' + esc(h.name) + '</b>' + (h.nameEn ? '<span class="en">' + esc(h.nameEn) + '</span>' : '') +
+      '<div class="st" style="color:' + (TIER_COL[h.tier] || '#ffb347') + '">#' + (h.rank + 1) + ' · ' + h.tier + ' · score ' + h.score + ' · ' + h.confidence + '</div>' +
+      '<a href="' + h.url + '">หน้าร้าน · the page →</a>';
+  } else {
+    var mk = best.d; x = mk.x; y = mk.y;
+    if (mk.lamp != null && !NAMES) {
+      tip.innerHTML = '…'; tip.style.display = 'block'; tip.style.left = x + 12 + 'px'; tip.style.top = y + 12 + 'px';
+      if (!showTip.loading) { showTip.loading = true; j('data/names.json').then(function (d) { NAMES = d; dirty = true; showTip(x, y); }); }
+      return;
+    }
+    var L = mk.lamp != null ? NAMES[mk.lamp] : KD[mk.kind].names[mk.i], sc = mk.lamp != null ? P.sched[mk.lamp] : KD[mk.kind].sched[mk.i];
+    var m = mow(now()), o = sc >= 0 && isOpen(sc, m), k = sc >= 0 ? nextChange(sc, m) : null;
+    var when = k == null ? '' : hhmm(now() + k * 6e4);
+    var st = sc < 0 ? '<div class="st">' + bi(GROUPS[mk.g][2], GROUPS[mk.g][3]) + '</div>'
+      : '<div class="st ' + (o ? 'open' : 'shut') + '">' + (o ? 'เปิดอยู่ · open' : 'ปิดอยู่ · shut') + (when ? ' — ' + (o ? 'ปิด closes ' : 'เปิด opens ') + when : '') + '</div>';
+    html = '<b>' + esc(L[0]) + '</b>' + (L[1] ? '<span class="en">' + esc(L[1]) + '</span>' : '') + st +
+      '<a href="/' + L[2] + '.html">หน้าร้าน · the page →</a>';
+  }
+  tip.innerHTML = html; tip.style.display = 'block';
+  var tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.max(8, Math.min(W - tw - 8, x + 12)) + 'px';
+  tip.style.top = Math.max(8, Math.min(H - th - 8, y + 12)) + 'px';
+}
+
+/* ------------------------------------------------------------ pan, zoom, pinch
+   Michael, 2026-10-02: hands should "feel the same as google maps". So the same
+   set: drag to pan with a fling at the end, pinch zooms about the fingers, double
+   tap zooms in, a two-finger tap zooms out, double-tap-and-drag zooms on one
+   finger, ctrl/⌘ + wheel (and a trackpad pinch) zooms about the pointer. Inside
+   the front page the map takes two fingers and the page keeps one, as an embedded
+   Google map does, and says so the first time a single finger tries. */
+var MINS = 150, MAXS = 60000;
+function clampView() {
+  view.S = Math.max(MINS, Math.min(MAXS, view.S));
+  view.lat = Math.max(16.6, Math.min(21, view.lat)); view.lng = Math.max(96.8, Math.min(101.2, view.lng));
+}
+/* put the ground point ll under screen point (x, y) at scale S */
+function pinTo(ll, x, y, S) {
+  view.S = Math.max(MINS, Math.min(MAXS, S));
+  view.lng = ll[1] - (x - W / 2) / (view.S * COS); view.lat = ll[0] + (y - H / 2) / view.S;
+  clampView(); dirty = true;
+}
+function quiet() {
+  tip.style.display = 'none'; hint(false); anim = null; fling = null;
+  document.querySelectorAll('#where .btn').forEach(function (b) { b.classList.remove('on'); });
+}
+function zoomAt(x, y, f) {
+  var ll = unpx(x, y), S = Math.max(MINS, Math.min(MAXS, view.S * f));
+  zoomTo(ll[0] + (y - H / 2) / S, ll[1] - (x - W / 2) / (S * COS), S);
+}
+/* fling: the pan carries on after the finger lifts and slows to a stop */
+var vel = [];
+function track(x, y) { var t = performance.now(); vel.push([t, x, y]); while (vel.length > 2 && t - vel[0][0] > 100) vel.shift(); }
+function release() {
+  if (REDUCED || vel.length < 2) return;
+  var a = vel[0], b = vel[vel.length - 1], dt = b[0] - a[0];
+  if (dt <= 0 || performance.now() - b[0] > 60) return;
+  var vx = (b[1] - a[1]) / dt, vy = (b[2] - a[2]) / dt;
+  if (Math.hypot(vx, vy) < 0.25) return;
+  fling = { vx: vx, vy: vy, t: performance.now() };
+}
+function stepFling(t) {
+  if (!fling) return;
+  var dt = Math.min(40, t - fling.t); fling.t = t;
+  var decay = Math.exp(-dt / 320);
+  view.lng -= fling.vx * dt / (view.S * COS); view.lat += fling.vy * dt / view.S;
+  fling.vx *= decay; fling.vy *= decay; clampView(); dirty = true;
+  if (Math.hypot(fling.vx, fling.vy) < 0.02) fling = null;
+}
+/* the two-finger notice, as an embedded Google map gives it */
+var coop = document.createElement('div'); coop.id = 'coop'; document.body.appendChild(coop);
+function coopSay(kind) {
+  var mac = /Mac|iPhone|iPad/.test(navigator.platform || '');
+  coop.innerHTML = kind === 'wheel'
+    ? bi(mac ? 'กด ⌘ ค้างแล้วเลื่อนเพื่อซูม' : 'กด Ctrl ค้างแล้วเลื่อนเพื่อซูม', mac ? 'Use ⌘ + scroll to zoom the map' : 'Use Ctrl + scroll to zoom the map')
+    : bi('ใช้สองนิ้วเลื่อนแผนที่', 'Use two fingers to move the map');
+  coop.classList.add('on'); clearTimeout(coopSay.t);
+  coopSay.t = setTimeout(function () { coop.classList.remove('on'); }, 1400);
+}
+function coopHide() { clearTimeout(coopSay.t); coop.classList.remove('on'); }
+
+/* taps: one shows a card or follows a name; a second landing within 300 ms zooms in */
+var lastTap = null;
+function isQuick(x, y) { return !!(lastTap && performance.now() - lastTap.t < 300 && Math.hypot(x - lastTap.x, y - lastTap.y) < 30); }
+function tapAt(x, y, quick) {
+  var t = performance.now();
+  if (quick && lastTap) {
+    var was = lastTap; lastTap = null;
+    if (!was.zoomed) { tip.style.display = 'none'; zoomAt(x, y, 2); }
+    return;
+  }
+  lastTap = { t: t, x: x, y: y, zoomed: showTip(x, y) === 'zoom' };
+}
+
+/* ---- touch ---- */
+var T = null;   // {n, x0, y0, t0, moved, ll, d0, S0, quick, scroll}
+function tlist(e) { var a = []; for (var i = 0; i < e.touches.length; i++) a.push([e.touches[i].clientX, e.touches[i].clientY]); return a; }
+function mid(a) { return [(a[0][0] + a[1][0]) / 2, (a[0][1] + a[1][1]) / 2]; }
+function dist(a) { return Math.hypot(a[0][0] - a[1][0], a[0][1] - a[1][1]); }
+function startOne(x, y, quick) {
+  T = { n: 1, x0: x, y0: y, t0: performance.now(), moved: false, ll: unpx(x, y), S0: view.S, quick: quick };
+  vel = []; track(x, y);
+}
+function startTwo(a) {
+  var m = mid(a);
+  T = { n: 2, x0: m[0], y0: m[1], t0: T && T.n === 2 ? T.t0 : performance.now(), moved: T ? T.moved : false,
+        ll: unpx(m[0], m[1]), d0: Math.max(1, dist(a)), S0: view.S };
+  vel = []; track(m[0], m[1]);
+}
+cv.addEventListener('touchstart', function (e) {
+  var a = tlist(e); fling = null; anim = null;
+  if (a.length >= 2) { e.preventDefault(); coopHide(); startTwo(a); gest = true; quiet(); return; }
+  /* a finger landing just after a tap, near it: double-tap-and-drag zooms */
+  var quick = isQuick(a[0][0], a[0][1]);
+  if (quick) e.preventDefault();
+  startOne(a[0][0], a[0][1], quick);
+  if (!EMBED || quick) gest = true;
+}, { passive: false });
+cv.addEventListener('touchmove', function (e) {
+  if (!T) return;
+  var a = tlist(e);
+  if (T.n === 2 && a.length >= 2) {
+    e.preventDefault();
+    var m = mid(a), d = dist(a);
+    if (!T.moved && (Math.abs(d - T.d0) > 8 || Math.hypot(m[0] - T.x0, m[1] - T.y0) > 8)) { T.moved = true; quiet(); }
+    if (T.moved) { pinTo(T.ll, m[0], m[1], T.S0 * d / T.d0); track(m[0], m[1]); }
+    return;
+  }
+  if (T.n !== 1 || a.length !== 1) return;
+  var x = a[0][0], y = a[0][1];
+  if (!T.moved && Math.hypot(x - T.x0, y - T.y0) > 8) T.moved = true;
+  if (!T.moved) return;
+  if (T.quick) {                                 // up = out, down = in, about where the taps fell
+    e.preventDefault(); lastTap = null; quiet();
+    pinTo(T.ll, T.x0, T.y0, T.S0 * Math.exp((y - T.y0) * 0.012));
+    return;
+  }
+  if (EMBED) { if (!T.scroll) { T.scroll = true; coopSay('touch'); } return; }   // the page scrolls
+  e.preventDefault(); quiet();
+  pinTo(T.ll, x, y, view.S); track(x, y);
+}, { passive: false });
+function touchEnd(e) {
+  if (!T) return;
+  var a = tlist(e), was = T, quick = e.type === 'touchend' && performance.now() - was.t0 < 300;
+  if (was.n === 2) {
+    if (a.length >= 2) { startTwo(a); return; }  // a third finger came and went
+    if (!was.moved && quick && e.type === 'touchend') {   // two-finger tap: out
+      e.preventDefault(); T = null; gest = null; zoomAt(was.x0, was.y0, 0.5); return;
+    }
+    if (a.length === 1 && !EMBED) { startOne(a[0][0], a[0][1], false); T.moved = true; return; }
+    T = null; gest = null; if (was.moved) { release(); dirty = true; }
+    return;
+  }
+  T = null; gest = null;
+  if (e.type !== 'touchend') return;
+  if (!was.moved) { e.preventDefault(); tapAt(was.x0, was.y0, was.quick); return; }
+  if (!was.quick && !EMBED) release();
+  dirty = true;
+}
+cv.addEventListener('touchend', touchEnd, { passive: false });
+cv.addEventListener('touchcancel', touchEnd);
+
+/* ---- mouse and pen ---- */
+var M = null;
+cv.addEventListener('pointerdown', function (e) {
+  if (e.pointerType === 'touch' || e.button !== 0) return;
+  cv.setPointerCapture(e.pointerId); fling = null; anim = null;
+  M = { x0: e.clientX, y0: e.clientY, ll: unpx(e.clientX, e.clientY), moved: false, quick: isQuick(e.clientX, e.clientY) }; vel = []; track(e.clientX, e.clientY);
+  gest = true; cv.classList.add('drag');
+});
+cv.addEventListener('pointermove', function (e) {
+  if (!M || e.pointerType === 'touch') return;
+  if (!M.moved && Math.hypot(e.clientX - M.x0, e.clientY - M.y0) > 4) { M.moved = true; quiet(); }
+  if (M.moved) { pinTo(M.ll, e.clientX, e.clientY, view.S); track(e.clientX, e.clientY); }
+});
+function mouseEnd(e) {
+  if (!M || e.pointerType === 'touch') return;
+  var was = M; M = null; gest = null; cv.classList.remove('drag');
+  if (e.type !== 'pointerup') return;
+  if (!was.moved) { tapAt(was.x0, was.y0, was.quick); return; }
+  release(); dirty = true;
+}
+cv.addEventListener('pointerup', mouseEnd);
+cv.addEventListener('pointercancel', mouseEnd);
+cv.addEventListener('wheel', function (e) {
+  if (EMBED && !e.ctrlKey && !e.metaKey) { coopSay('wheel'); return; }
+  e.preventDefault(); anim = null; fling = null;
+  var dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  var f = Math.exp(-dy * (e.ctrlKey ? 0.01 : 0.0022));   // a trackpad pinch arrives as ctrl + small deltas
+  pinTo(unpx(e.clientX, e.clientY), e.clientX, e.clientY, view.S * f);
+  tip.style.display = 'none'; hint(false);
+}, { passive: false });
+
+/* ------------------------------------------------------------ size */
+function size() {
+  W = innerWidth; H = innerHeight; if (!W || !H) return;
+  [cv, base].forEach(function (c) { c.width = W * DPR; c.height = H * DPR; });
+  cv.style.width = W + 'px'; cv.style.height = H + 'px'; dirty = true;
+  if (view.S < 100) go('cm');
+}
+addEventListener('resize', size);
+
+/* ------------------------------------------------------------ controls */
+document.querySelectorAll('#where .btn').forEach(function (b) { b.addEventListener('click', function () { go(b.dataset.go); }); });
+var dayBtn = document.getElementById('dayBtn');
+dayBtn.addEventListener('click', function () {
+  fast = !fast; dayBtn.classList.toggle('on', fast); document.getElementById('fast').classList.toggle('on', fast);
+  if (!fast) { simOffset = AT ? simOffset : 0; lastMow = -2; }
+  dirty = true;
+});
+
+var fold = document.getElementById('fold'), readEl = document.getElementById('read');
+function setFold(f) { readEl.classList.toggle('folded', f); fold.setAttribute('aria-expanded', String(!f)); fold.textContent = f ? 'ขยาย · more' : 'ย่อ · fold'; }
+fold.addEventListener('click', function () { setFold(!readEl.classList.contains('folded')); });
+if (innerWidth < 640) setFold(true);
+
+/* ------------------------------------------------------------ load, in the order it is seen */
+function j(u) { return fetch(u).then(function (r) { if (!r.ok) throw new Error(u + ' ' + r.status); return r.json(); }); }
+function soft(u, key) { return j(u).then(function (d) { LV[key] = d; dirty = true; readings(); }, function () { }); }
+
+size(); go('cm'); clock(); readings(); requestAnimationFrame(frame);
+
+/* 1 — the lamps (~40 kB): the city lights up */
+j('data/lamps.json').then(function (d) {
+  P = d;
+  var N = P.lamps, f = P.p;
+  P.lat = new Float64Array(N); P.lng = new Float64Array(N); P.g = new Uint8Array(N); P.sched = new Int16Array(N);
+  for (var i = 0; i < N; i++) {
+    P.lat[i] = P.base[0] + f[i * 4] / P.q; P.lng[i] = P.base[1] + f[i * 4 + 1] / P.q;
+    P.g[i] = f[i * 4 + 2]; P.sched[i] = f[i * 4 + 3];
+  }
+  lamps = { n: N, open: new Uint8Array(N), lit: 0 };
+  igniteAt = performance.now(); relight(); legend();
+  j('data/kinds.json').then(function (d) { KN = d; chips(); }, function () { });
+  KON.forEach(loadKind);
+  if (/engine/.test(location.hash)) window.ENGINE && ENGINE.open();
+
+  /* 2 — what is read live, small first */
+  soft(LIVE + 'data/weather.json', 'weather'); soft(LIVE + 'data/air.json', 'air'); soft(LIVE + 'data/ping.json', 'ping');
+  /* 3 — the ground under the lamps */
+  j('data/ground.json').then(function (g) { G = g; dirty = true; }, function () { });
+  j('data/roads.json').then(function (r) { R = r; dirty = true; }, function () { });
+  j('data/labels.json').then(function (d) { LABELS = d; dirty = true; }, function () { });
+  soft(LIVE + 'data/sky.json', 'sky'); soft(LIVE + 'data/events.json', 'events');
+}).catch(function (e) { document.getElementById('lit').textContent = 'โหลดไม่ขึ้น · the city did not load: ' + e.message; });
+
+/* refresh the perishable files every ten minutes */
+setInterval(function () {
+  Promise.all([soft(LIVE + 'data/weather.json', 'weather'), soft(LIVE + 'data/air.json', 'air'), soft(LIVE + 'data/ping.json', 'ping')])
+    .then(function () { dirty = true; readings(); });
+}, 600e3);
+setInterval(function () { var d = document.body.classList.contains('day'); if (d !== legend.d) { legend.d = d; legend(); } }, 2000);
+
+/* the part of the screen the panels leave open, when the engine is out */
+function openBox() {
+  var box = { l: 0, r: W, t: 0, b: H }, en = document.getElementById('engine');
+  if (!en.classList.contains('open')) return box;
+  if (W > 640) box.r = Math.max(200, W - en.offsetWidth);
+  else { box.t = document.getElementById('top').getBoundingClientRect().bottom; box.b = Math.max(box.t + 80, H - en.offsetHeight); }
+  return box;
+}
+var crossEl = document.getElementById('crosshair');
+setInterval(function () {
+  if (!crossEl.classList.contains('on')) return;
+  var b = openBox(); crossEl.style.left = ((b.l + b.r) / 2) + 'px'; crossEl.style.top = ((b.t + b.b) / 2) + 'px';
+}, 250);
+
+/* ------------------------------------------------------------ what engine.js may touch */
+window.CITY = {
+  names: function () { return LHITS; },
+  view: function () { return view; },
+  places: function () { return P; },
+  lamps: function () { return lamps; },
+  center: function () { var b = openBox(); return unpx((b.l + b.r) / 2, (b.t + b.b) / 2); },
+  simulated: function () { return Math.abs(simOffset) > 120e3; },
+  openAtLabel: function () { var m = mow(now()); return ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'][Math.floor(m / 1440)] + ' ' + hhmm(now()); },
+  showHits: function (h) { hits = h; hitsAt = performance.now(); tip.style.display = 'none'; },
+  dimHits: function (keep) { if (hits) hits.forEach(function (h) { h.gone = !keep(h); }); },
+  clearHits: function () { hits = null; },
+  fit: function (list) {
+    if (!list.length) return;
+    /* fit the province holding most of the hits; the rest stay drawn */
+    var north = list.filter(function (h) { return h.lat > 19.45; });
+    list = north.length * 2 > list.length ? north : list.filter(function (h) { return h.lat <= 19.45; });
+    var la = list.map(function (h) { return h.lat; }).sort(function (a, b) { return a - b; });
+    var ln = list.map(function (h) { return h.lng; }).sort(function (a, b) { return a - b; });
+    var q = function (a, p) { return a[Math.floor((a.length - 1) * p)]; };
+    var s = q(la, 0.1), nn = q(la, 0.9), w = q(ln, 0.1), e = q(ln, 0.9), box = openBox();
+    var bw = box.r - box.l, bh = Math.max(80, box.b - box.t);
+    view.S = Math.max(150, Math.min(30000, Math.min(bw / ((e - w) * COS + 0.004), bh / (nn - s + 0.004)) * 0.85));
+    var cx = (box.l + box.r) / 2, cy = (box.t + box.b) / 2;
+    view.lng = (w + e) / 2 - (cx - W / 2) / (view.S * COS);
+    view.lat = (s + nn) / 2 + (cy - H / 2) / view.S;
+    dirty = true;
+  }
+};
+})();

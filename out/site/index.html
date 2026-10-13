@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="th" translate="no" class="notranslate">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="google" content="notranslate">
+<title>เมืองตอนนี้ · The City, Live · Mot Dang</title>
+<meta name="description" content="เชียงใหม่ตอนนี้ ร้านไหนเปิด ฟ้า ฝน พระจันทร์ แม่น้ำปิง อากาศ · Chiang Mai this minute: every place Mot Dang holds, the ones open now lit as lamps, with the sky, the rain, the moon, the Ping and the air.">
+<link rel="canonical" href="https://motdang.net/sites/city-live/">
+<meta property="og:type" content="website">
+<meta property="og:title" content="เมืองตอนนี้ · The City, Live">
+<meta property="og:description" content="เชียงใหม่ตอนนี้ ร้านไหนเปิดอยู่ · Chiang Mai this minute, every open place lit.">
+<meta property="og:url" content="https://motdang.net/sites/city-live/">
+<meta property="og:image" content="https://motdang.net/sites/city-live/card.jpg">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0a0f16">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="preload" href="data/lamps.json" as="fetch" crossorigin="anonymous">
+<link rel="preload" href="city.js?v=1003names" as="script">
+<style>
+:root{--ink:#f3eee2;--mute:#a9b3bd;--panel:rgba(10,15,22,.84);--line:rgba(255,255,255,.14);--hot:#ffb347;--go:#7fd8a4;--no:#ff7b72;--mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+*{box-sizing:border-box;min-width:0}
+html,body{margin:0;height:100%;background:#0a0f16;color:var(--ink);overflow:hidden;
+  font:15px/1.45 "Sarabun","Noto Sans Thai","Thonburi",system-ui,sans-serif;-webkit-text-size-adjust:100%}
+a{color:var(--hot)}
+button{font:inherit;color:inherit}
+#map{position:fixed;inset:0;width:100%;height:100%;touch-action:none;cursor:grab;display:block}
+#map.drag{cursor:grabbing}
+.en{color:var(--mute)}
+.bi .en::before{content:" · "}
+.panel{background:var(--panel);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:14px}
+
+/* the clock, top left; the controls, top right */
+#top{position:fixed;left:max(12px,env(safe-area-inset-left));right:max(12px,env(safe-area-inset-right));top:max(12px,env(safe-area-inset-top));
+  display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none}
+#top>*{pointer-events:auto}
+#head{padding:10px 14px 12px;max-width:420px}
+#head h1{margin:0;font-size:13px;font-weight:600;letter-spacing:.02em;color:var(--mute)}
+#head h1 b{color:var(--ink)}
+#clock{font:600 40px/1.05 var(--mono);letter-spacing:-.02em;margin:2px 0 0}
+#day{font-size:14px}
+#lit{margin-top:6px;font-size:14px}
+#lit b{color:var(--hot);font-variant-numeric:tabular-nums}
+#fast{margin-left:6px;font:600 11px var(--mono);color:#0a0f16;background:var(--hot);border-radius:4px;padding:1px 5px;display:none}
+#fast.on{display:inline}
+
+/* the readings, bottom left */
+#read{position:fixed;left:max(12px,env(safe-area-inset-left));bottom:max(12px,env(safe-area-inset-bottom));padding:10px 14px;width:min(420px,calc(100vw - 24px));max-height:46vh;overflow:auto}
+#fold{position:absolute;right:8px;top:8px;padding:2px 9px;font-size:11px;z-index:1}
+#read.folded .row:nth-child(n+2),#read.folded #legend{display:none}
+#read .row{display:grid;grid-template-columns:22px 1fr;gap:8px;padding:4px 0;border-top:1px solid var(--line)}
+#read .row:first-child{border-top:0}
+#read .k{font:600 11px/20px var(--mono);color:var(--mute)}
+#read .v{font-size:14px}
+#read .v small{display:block;color:var(--mute);font-size:12px}
+#legend{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:6px;font-size:12px;color:var(--mute)}
+#legend i{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:1px}
+
+/* the controls, top right */
+#ctl{display:flex;flex-direction:column;gap:6px;align-items:flex-end}
+.btn{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 12px;cursor:pointer;font-size:13px;white-space:nowrap}
+.btn:hover{border-color:var(--hot)}
+.btn.on{background:var(--hot);color:#0a0f16;border-color:var(--hot)}
+.btn.on .en{color:#0a0f16}
+#engineBtn{font-family:var(--mono);font-size:12px;letter-spacing:.04em}
+#where{display:flex;gap:6px}
+
+/* a lamp, tapped */
+#tip{position:fixed;display:none;padding:10px 12px;max-width:280px;font-size:14px;pointer-events:auto;z-index:5}
+#tip b{display:block}
+#tip .rd{display:block;font-size:13px;font-style:italic}
+#tip .st{font:600 12px var(--mono);margin-top:4px}
+#tip .st.open{color:var(--go)} #tip .st.shut{color:var(--no)}
+#tip a{display:inline-block;margin-top:6px;font-size:13px}
+
+/* the engine drawer */
+#engine{position:fixed;top:0;right:0;bottom:0;width:min(460px,100vw);transform:translateX(102%);transition:transform .28s ease;
+  background:rgba(6,9,13,.94);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-left:1px solid var(--line);
+  font:13px/1.5 var(--mono);color:#d7e0e8;overflow:auto;z-index:10;padding:14px 16px 40px}
+#engine.open{transform:none}
+#engine h2{font:600 12px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--hot);margin:18px 0 6px}
+#engine h2 .th{font-family:"Sarabun",system-ui,sans-serif;letter-spacing:0;text-transform:none;color:var(--mute);font-weight:500}
+#engine .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+#engine .top b{font-size:15px;color:#fff}
+#engine .x{background:none;border:1px solid var(--line);border-radius:6px;padding:2px 8px;cursor:pointer}
+#engine p{margin:6px 0;color:#aeb9c3;font-family:"Sarabun",system-ui,sans-serif;font-size:14px}
+#q{display:flex;gap:6px;margin-top:6px}
+#q input{flex:1;background:#0f1620;border:1px solid var(--line);border-radius:8px;color:#fff;padding:8px 10px;font:14px var(--mono)}
+#q input:focus{outline:1px solid var(--hot)}
+#q button{background:var(--hot);color:#0a0f16;border:0;border-radius:8px;padding:0 12px;font-weight:700;cursor:pointer}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.chip{background:#101822;border:1px solid var(--line);border-radius:999px;padding:3px 9px;cursor:pointer;font:12px var(--mono);color:#cfd8e0}
+.chip:hover{border-color:var(--hot)}
+#trace{margin-top:10px}
+.step{border-left:2px solid #2a3642;padding:4px 0 8px 12px;position:relative;opacity:.35;transition:opacity .25s}
+.step.on{opacity:1;border-left-color:var(--hot)}
+.step::before{content:"";position:absolute;left:-6px;top:9px;width:10px;height:10px;border-radius:50%;background:#2a3642}
+.step.on::before{background:var(--hot)}
+.step .h{display:flex;justify-content:space-between;gap:8px;color:#fff}
+.step .ms{color:var(--mute)}
+.step .b{color:#aeb9c3;white-space:pre-wrap;word-break:break-word}
+.step code{color:var(--go)}
+.bar{display:grid;grid-template-columns:92px 1fr 52px;gap:6px;align-items:center;font-size:12px;margin:2px 0}
+.bar span:nth-child(2){height:8px;background:#16202b;border-radius:4px;overflow:hidden;display:block}
+.bar i{display:block;height:100%;background:var(--hot)}
+.res{border:1px solid var(--line);border-radius:8px;padding:6px 8px;margin:5px 0;background:#0c131b}
+.res .n{color:#fff;font-family:"Sarabun",system-ui,sans-serif;font-size:14px}
+.res .m{color:var(--mute);font-size:11px}
+.curl{background:#0c131b;border:1px solid var(--line);border-radius:6px;padding:6px 8px;font-size:11px;color:#9fb3c4;word-break:break-all;margin:4px 0;cursor:copy}
+pre.raw{max-height:260px;overflow:auto;background:#0c131b;border:1px solid var(--line);border-radius:6px;padding:8px;font-size:11px;color:#9fb3c4;display:none}
+pre.raw.on{display:block}
+.doors{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.doors a{display:block;background:#0c131b;border:1px solid var(--line);border-radius:6px;padding:5px 8px;text-decoration:none;color:#cfd8e0;font-size:12px}
+.doors a:hover{border-color:var(--hot)}
+.doors a small{display:block;color:var(--mute);font-size:10px}
+.flow{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:11px}
+.flow span{border:1px solid var(--line);border-radius:4px;padding:2px 6px;background:#0c131b}
+.flow em{font-style:normal;color:var(--mute)}
+#crosshair{position:fixed;left:50%;top:50%;width:28px;height:28px;margin:-14px 0 0 -14px;pointer-events:none;display:none;z-index:4}
+#crosshair.on{display:block}
+#credits{position:fixed;right:max(12px,env(safe-area-inset-right));bottom:max(8px,env(safe-area-inset-bottom));font-size:10px;color:rgba(255,255,255,.45);text-align:right;max-width:46vw}
+#credits a{color:inherit}
+
+body.day{--panel:rgba(252,249,241,.88);--ink:#1b2128;--mute:#5f6a74;--line:rgba(0,0,0,.12);--hot:#c0620c;--go:#1f8a4c;--no:#b3261e}
+body.day #credits{color:rgba(0,0,0,.5)}
+
+@media (max-width:640px){
+  #top{flex-direction:column;align-items:stretch;gap:6px}
+  #head{max-width:none;padding:8px 12px}
+  #clock{font-size:28px;display:inline-block;margin-right:8px}
+  #day{display:inline-block}
+  #ctl{flex-direction:row;flex-wrap:wrap;justify-content:flex-start;align-items:center}
+  #where{gap:4px}
+  #ctl .btn{padding:4px 9px;font-size:12px}
+  #dayBtn .en{display:none}
+  #read{max-height:38vh;font-size:13px}
+  #credits{display:none}
+  #engine{width:100vw;top:auto;height:58vh;border-left:0;border-top:1px solid var(--line);border-radius:14px 14px 0 0;transform:translateY(102%)}
+  #engine.open{transform:none}
+  body.eng #lit,body.eng #read,body.eng #dayBtn{display:none}
+}
+body.eng #read{display:none}
+html.card #read,html.card #ctl,html.card #credits{display:none}
+html.embed #read,html.embed #where,html.embed #dayBtn,html.embed #credits,html.embed #engineBtn,html.embed #lit .sub{display:none}
+#head h1 .en{color:inherit}
+/* inside the front page it follows the bar's ไทย / EN (md-lang) */
+html.embed.lang-th .en,html.embed.lang-en .th{display:none}
+/* the embed's own hands: zoom, the key as chips, a first hint */
+#mapui{display:none}
+html.embed #mapui{display:block}
+#zoom{position:fixed;right:10px;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:6px;z-index:4}
+#zoom button{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:rgba(10,15,22,.82);color:#fff;font:700 22px/1 system-ui;display:flex;align-items:center;justify-content:center;cursor:pointer;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+#mapui .foot{position:fixed;left:0;right:0;bottom:0;z-index:4;padding:22px 0 10px;background:linear-gradient(transparent,rgba(7,9,13,.9) 40%)}
+#hint{margin:0 12px 8px;font-size:15px;color:#fff;text-shadow:0 1px 6px #000;transition:opacity .6s}
+#hint.gone{opacity:0;height:0;margin:0;overflow:hidden}
+#hint .en::before{content:none}
+html:not(.lang-th):not(.lang-en) #hint .en{display:block}
+#chips{display:flex;gap:6px;overflow-x:auto;padding:0 12px;scrollbar-width:none;touch-action:pan-x}
+#chips::-webkit-scrollbar{display:none}
+#chips button{flex:none;display:inline-flex;align-items:center;gap:6px;min-height:40px;padding:0 12px;border-radius:999px;border:1px solid var(--line);background:rgba(10,15,22,.85);color:#fff;font:600 14px "Sarabun",system-ui,sans-serif;cursor:pointer;white-space:nowrap}
+#chips button i{width:10px;height:10px;border-radius:50%;box-shadow:0 0 8px currentColor}
+#chips button b{font:600 12px var(--mono);color:var(--mute)}
+#chips button[aria-pressed=true]{background:#fff;color:#0a0f16}
+#chips button[aria-pressed=true] b,#chips button[aria-pressed=true] .bi span{color:#0a0f16}
+#chips .bi .en::before{content:none}
+html:not(.lang-th):not(.lang-en) #chips .en{display:none}
+#legend [data-g]{cursor:pointer}
+#legend [data-g].on{color:var(--ink);text-decoration:underline}
+html.embed.lang-en .bi .en::before{content:none}
+html.embed #map{touch-action:pan-y;cursor:default}
+/* the two-finger notice (Google's embed gives the same one) */
+#coop{position:fixed;inset:0;z-index:6;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(0,0,0,.45);color:#fff;font:600 19px/1.4 "Sarabun",system-ui,sans-serif;text-align:center;text-shadow:0 1px 6px #000;opacity:0;pointer-events:none;transition:opacity .25s}
+#coop.on{opacity:1}
+#coop .en::before{content:none}
+html:not(.lang-th):not(.lang-en) #coop .en{display:block}
+html.embed #head{padding:6px 10px 8px}
+html.embed #clock{font-size:26px}
+/* the tool: the first touch inside the front page turns the picture into a street map */
+#tbar,#scale,#zoom [data-z=me]{display:none}
+#findme{display:inline-flex;align-items:center;gap:8px;min-height:46px;padding:0 16px 0 12px;margin:0 0 8px;border-radius:999px;border:2px solid #fff;background:#1a73e8;color:#fff;font:800 16px/1.2 system-ui,sans-serif;cursor:pointer;pointer-events:auto;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+#findme .en{color:#fff}
+#aroundme{display:inline-flex;align-items:center;min-height:46px;padding:0 14px;margin:0 0 8px 8px;border-radius:999px;background:#fff;color:#0b3d91;font:800 16px/1.2 system-ui,sans-serif;text-decoration:none;pointer-events:auto;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+#aroundme .en{color:#0b3d91}
+#findme[data-st=busy]{background:#3d4a5c}
+#findme[data-st=blocked],#findme[data-st=nofix]{background:#a3122a}
+#findme[data-st=out]{background:#3d4a5c}
+html.tool #head{display:none}
+html.tool #tbar{display:flex;align-items:flex-start;gap:10px;padding:8px 12px 8px 8px;max-width:min(560px,calc(100vw - 24px));background:rgba(255,255,255,.95);color:#1b2128;border:1px solid rgba(0,0,0,.12);box-shadow:0 2px 10px rgba(0,0,0,.15)}
+#tclose{flex:none;width:40px;height:40px;border-radius:10px;border:1px solid rgba(0,0,0,.15);background:#fff;color:#1b2128;font:700 18px/1 system-ui;cursor:pointer}
+#tbar .tx{min-width:0}
+#tbar .w{font:800 18px/1.2 "Sarabun",system-ui,sans-serif}
+#tbar .n{font:500 14px/1.35 "Sarabun",system-ui,sans-serif;color:#3a4656}
+#tbar .n b{color:#1b2128}
+#tbar .k{display:flex;flex-wrap:wrap;gap:4px 10px;font:500 13px/1.3 "Sarabun",system-ui,sans-serif;color:#3a4656;margin-top:2px}
+#tbar .k i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:0}
+html.tool #zoom [data-z=me]{display:flex}
+html.tool #zoom button{background:#fff;color:#1b2128;border-color:rgba(0,0,0,.15);box-shadow:0 1px 6px rgba(0,0,0,.18)}
+html.tool #map{touch-action:none;cursor:grab}
+html.tool #map.drag{cursor:grabbing}
+html.tool #mapui .foot{background:linear-gradient(transparent,rgba(242,239,233,.94) 40%)}
+html.tool #scale{display:block;margin:0 12px 6px;height:16px;border:2px solid #3a4656;border-top:0;font:600 11px/14px system-ui;color:#3a4656;text-align:center;background:rgba(255,255,255,.6)}
+html.tool #chips button{background:#fff;color:#1b2128;border-color:rgba(0,0,0,.15)}
+html.tool #chips button b{color:#5f6a74}
+html.tool #chips button[aria-pressed=true]{background:#1b2128;color:#fff}
+html.tool #chips button[aria-pressed=true] b,html.tool #chips button[aria-pressed=true] .bi span{color:#fff}
+html.tool #tip{background:#fff;color:#1b2128;border:1px solid rgba(0,0,0,.12);box-shadow:0 4px 18px rgba(0,0,0,.2)}
+html.tool #tip a{display:block;margin-top:4px}
+html.tool #coop{display:none}
+html.card #head{transform:scale(1.35);transform-origin:0 0}
+@media (max-width:640px) and (max-height:760px){ #read{max-height:28vh} }
+</style>
+</head>
+<body>
+<canvas id="map" aria-label="แผนที่เชียงใหม่ตอนนี้ · a live map of Chiang Mai"></canvas>
+<svg id="crosshair" viewBox="0 0 28 28"><circle cx="14" cy="14" r="9" fill="none" stroke="#ffb347" stroke-width="1.5"/><path d="M14 0v8M14 20v8M0 14h8M20 14h8" stroke="#ffb347" stroke-width="1.5"/></svg>
+
+<div id="top">
+<div id="tbar" class="panel"><button type="button" id="tclose" aria-label="กลับ · back">✕</button><div class="tx"><div class="w"></div><div class="n"></div><div class="k"></div></div></div>
+<header id="head" class="panel">
+  <h1 class="bi"><b class="th" lang="th">เมืองตอนนี้</b><span class="en" lang="en">The City, Live</span> <span id="fast">×1440</span></h1>
+  <div id="clock">--:--</div>
+  <div id="day" class="bi"></div>
+  <div id="lit"></div>
+</header>
+
+<nav id="ctl">
+  <button class="btn" id="engineBtn" aria-controls="engine">&gt;_ เครื่องยนต์ · engine</button>
+  <div id="where">
+    <button class="btn on" data-go="cm">เชียงใหม่</button>
+    <button class="btn" data-go="cr">เชียงราย</button>
+    <button class="btn" data-go="north">ภาคเหนือ</button>
+  </div>
+  <button class="btn" id="dayBtn">หนึ่งวันในหนึ่งนาที<span class="en"> · a day in a minute</span></button>
+</nav>
+</div>
+
+<section id="read" class="panel" aria-live="polite">
+  <button id="fold" class="btn" aria-expanded="true">ย่อ · fold</button>
+  <div id="rows"></div>
+  <div id="legend"></div>
+</section>
+
+<div id="tip" class="panel" role="dialog"></div>
+
+<div id="mapui">
+  <div id="zoom"><button type="button" data-z="in" aria-label="ซูมเข้า · zoom in">+</button><button type="button" data-z="out" aria-label="ซูมออก · zoom out">−</button><button type="button" data-z="me" aria-label="ฉันอยู่ไหน · where am I"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3" stroke="currentColor" stroke-width="2"/></svg></button><button type="button" data-z="home" aria-label="ทั้งเมือง · the whole city"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 11l9-7 9 7v9h-6v-6H9v6H3z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button></div>
+  <div class="foot">
+    <button type="button" id="findme" data-z="me" data-st="idle"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><circle cx="12" cy="12" r="4" fill="currentColor"/><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3" stroke="currentColor" stroke-width="2"/></svg><span class="l"><span class="bi"><span class="th">ฉันอยู่ที่ไหน</span><span class="en">Where am I</span></span></span></button>
+    <p id="hint" class="bi"><span class="th">ดวงไฟคือที่ที่เปิดอยู่นาทีนี้ แตะแผนที่เพื่อใช้งาน</span><span class="en">Lights are places open this minute. Tap the map to use it.</span></p>
+    <div id="scale"></div>
+    <div id="chips" aria-label="ชนิด · kinds"></div>
+  </div>
+</div>
+
+<div id="credits">
+  ร้านและที่อยู่ · places: <a href="/">Mot Dang</a>, <a href="https://www.openstreetmap.org/copyright">© OpenStreetMap</a> (ODbL) ·
+  ฟ้า ฝน อากาศ · weather, air: <a href="https://open-meteo.com/">Open-Meteo</a> (CC BY 4.0, CAMS) ·
+  แม่น้ำปิง · the Ping: <a href="https://www.hydro-1.net/">กรมชลประทาน RID</a> ·
+  การจราจร · traffic: <a href="https://www.tomtom.com/traffic-index/city/chiang-mai/">TomTom Traffic Index 2025</a>
+</div>
+
+<aside id="engine" aria-label="engine">
+  <div class="top"><b>&gt;_ motdang engine</b><button class="x" id="engineX">esc</button></div>
+  <p>ทุกอย่างบนแผนที่นี้มาจากฐานข้อมูลเดียวกับที่บอทอ่าน พิมพ์คำค้น แล้วดูเครื่องทำงานบนเมือง<br><span class="en">Everything on this map comes from the same database the bots read. Type a query and watch the engine work it over the city.</span></p>
+
+  <h2>query <span class="th">· ค้น</span></h2>
+  <form id="q"><input id="qi" autocomplete="off" spellcheck="false" placeholder="khao soi · ข้าวซอย · vet" aria-label="query"><button>run</button></form>
+  <div class="chips" id="chips"></div>
+  <div id="trace"></div>
+
+  <h2>the database <span class="th">· ฐานข้อมูล</span></h2>
+  <div id="db"></div>
+
+  <h2>who reads it <span class="th">· ใครอ่าน</span></h2>
+  <div id="readers"></div>
+
+  <h2>pipeline <span class="th">· สายพาน</span></h2>
+  <div class="flow"><span>GATHER</span><em>→</em><span>ENRICH</span><em>→</em><span>LAYER</span><em>→</em><span>VERIFY</span><em>→</em><span>PUBLISH</span></div>
+  <p>ร้านเล่าเรื่องตัวเองก่อน หน้าเฟซบุ๊กของร้านมาก่อนไดเรกทอรี ทะเบียนราชการมาก่อนการไต่เว็บ ทุกข้อมูลมีที่มา<br><span class="en">A shop's own page outranks a directory; a government register outranks a crawl. Each fact carries its source and a confidence grade: field, official, register, curated, crawled, third-party. Stdlib Python bakes it to static files; a Cloudflare Worker answers the API from one baked index.</span></p>
+
+  <h2>doors <span class="th">· ประตูสำหรับเครื่อง</span></h2>
+  <div class="doors" id="doors"></div>
+</aside>
+
+<script src="city.js?v=1003names" defer></script>
+<script src="engine.js" defer></script>
+</body>
+</html>
